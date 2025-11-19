@@ -1,8 +1,10 @@
-﻿using System.Windows;
+﻿using System;
+using System.Windows;
 using System.Windows.Media;
 using AlexNest.Core.Algorithms;
 using AlexNest.Core.Geometry;
 using AlexNest.Core.Model;
+
 namespace AlexNest.wpf;
 
 public class NestViewer : FrameworkElement

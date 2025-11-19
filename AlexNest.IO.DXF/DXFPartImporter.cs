@@ -1,27 +1,23 @@
-using netDxf;
-using netDxf.Entities;
+﻿using IxMilia.Dxf;
+using IxMilia.Dxf.Entities;
 using AlexNest.Core.Geometry;
 using AlexNest.Core.Model;
 
-namespace AlexNest.IO.Dxf;
+namespace AlexNest.IO.DXF;
 
-public class DXFPartImportOptions
+public class DxfPartImportOptions
 {
     /// <summary>
-    /// If set, only entities on these layers are imported as part geometry.
-    /// If null or empty, all closed polylines/circles/arcs are considered.
+    /// If set, only these layers are used as parts. If null/empty, all layers are used.
     /// </summary>
     public List<string>? PartLayers { get; set; }
 
     /// <summary>
-    /// If true, each closed polyline is treated as its own part.
-    /// If false, all geometry in the file forms a single part.
+    /// If true, each closed shape becomes its own part.
+    /// If false, all shapes are merged into a single part.
     /// </summary>
     public bool EachClosedShapeIsPart { get; set; } = true;
 
-    /// <summary>
-    /// Name to give the single merged part (if EachClosedShapeIsPart=false).
-    /// </summary>
     public string SinglePartName { get; set; } = "Part";
 }
 
@@ -30,86 +26,83 @@ public static class DxfPartImporter
     public static List<NestPart> ImportParts(string path, DxfPartImportOptions? options = null)
     {
         options ??= new DxfPartImportOptions();
-        var doc = DxfDocument.Load(path);
 
-        bool FilterLayer(EntityObject e)
+        // IxMilia: loads ALL DXF versions 1.0 → R2018, so no header hacks needed
+        var file = DxfFile.Load(path);
+
+        bool FilterLayer(DxfEntity e)
         {
             if (options.PartLayers == null || options.PartLayers.Count == 0)
                 return true;
-            return options.PartLayers.Contains(e.Layer.Name, StringComparer.OrdinalIgnoreCase);
+            return options.PartLayers.Contains(e.Layer, StringComparer.OrdinalIgnoreCase);
         }
 
-        // Collect contours
         var contours = new List<NestContour>();
 
-        // LwPolylines (most common)
-        foreach (var lw in doc.LwPolylines.Where(FilterLayer))
+        // LWPOLYLINEs
+        foreach (var lw in file.Entities.OfType<DxfLwPolyline>().Where(FilterLayer))
         {
             if (!lw.IsClosed) continue;
 
-            var contour = new NestContour { IsOuter = true }; // we�ll fix IsOuter later by area
-            foreach (var v in lw.Vertexes)
-            {
-                contour.Vertices.Add(new Vec2(v.Position.X, v.Position.Y));
-            }
+            var contour = new NestContour { IsOuter = true };
+            foreach (var v in lw.Vertices)
+                contour.Vertices.Add(new Vec2(v.X, v.Y));
+
             contours.Add(contour);
         }
 
-        // Regular Polylines
-        foreach (var pl in doc.Polylines.Where(FilterLayer))
+        // POLYLINEs
+        foreach (var pl in file.Entities.OfType<DxfPolyline>().Where(FilterLayer))
         {
             if (!pl.IsClosed) continue;
 
             var contour = new NestContour { IsOuter = true };
-            foreach (var v in pl.Vertexes)
-            {
-                contour.Vertices.Add(new Vec2(v.Position.X, v.Position.Y));
-            }
+            foreach (var v in pl.Vertices)
+                contour.Vertices.Add(new Vec2(v.Location.X, v.Location.Y));
+
             contours.Add(contour);
         }
 
-        // Circles (approximate to polygon)
-        foreach (var c in doc.Circles.Where(FilterLayer))
+        // CIRCLEs → approximate as polygon
+        foreach (var c in file.Entities.OfType<DxfCircle>().Where(FilterLayer))
         {
             var contour = new NestContour { IsOuter = true };
-            int segments = 32; // you can tweak this
+
+            const int segments = 32; // tweak if you want smoother circles
             for (int i = 0; i < segments; i++)
             {
-                double ang = 2 * Math.PI * i / segments;
+                double ang = 2.0 * Math.PI * i / segments;
                 double x = c.Center.X + c.Radius * Math.Cos(ang);
                 double y = c.Center.Y + c.Radius * Math.Sin(ang);
                 contour.Vertices.Add(new Vec2(x, y));
             }
+
             contours.Add(contour);
         }
 
-        // TODO: arcs if you want; for now we ignore them or you can approximate
-
-        // Classify outer vs inner by area sign (CCW vs CW)
+        // classify CCW (outer) vs CW (hole) by signed area
         foreach (var c in contours)
-        {
-            var area = c.GetSignedArea();
-            // This convention: CCW => positive => outer
-            c.IsOuter = area > 0;
-        }
+            c.IsOuter = c.GetSignedArea() > 0;
 
         if (options.EachClosedShapeIsPart)
         {
             var parts = new List<NestPart>();
-            int index = 1;
-            foreach (var c in contours)
+            int i = 1;
+
+            foreach (var contour in contours)
             {
-                var p = new NestPart
+                var part = new NestPart
                 {
-                    Name = $"Part_{index}",
+                    Name = $"Part_{i}",
                     Quantity = 1,
                     RotationStepDeg = 90
                 };
-                p.Contours.Add(c);
-                p.RecalculateProperties();
-                parts.Add(p);
-                index++;
+                part.Contours.Add(contour);
+                part.RecalculateProperties();
+                parts.Add(part);
+                i++;
             }
+
             return parts;
         }
         else
@@ -120,7 +113,6 @@ public static class DxfPartImporter
                 Quantity = 1,
                 RotationStepDeg = 90
             };
-
             foreach (var c in contours)
                 part.Contours.Add(c);
 

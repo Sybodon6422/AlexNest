@@ -2,7 +2,6 @@ using AlexNest.Core.Geometry;
 using AlexNest.Core.Model;
 
 namespace AlexNest.Core.Algorithms;
-
 public class GridNesterSettings
 {
     /// <summary>
@@ -68,11 +67,10 @@ public class GridNester
             }
         }
 
-        return new NestingResult
-        {
-            Placements = placements,
-            UnplacedParts = unplaced
-        };
+        var result = new NestingResult();
+        result.Placements.AddRange(placements);
+        result.UnplacedParts.AddRange(unplaced);
+        return result;
     }
 
     private bool TryPlacePart(

@@ -1,16 +1,11 @@
-﻿ <Project Sdk="Microsoft.NET.Sdk">
-
+﻿<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
-
   <ItemGroup>
-    <ProjectReference Include="..\AlexNest.Core\AlexNest.Core.vbproj" />
-    <ProjectReference Include="..\AlexNest.IO.DXF\AlexNest.IO.DXF.vbproj" />
+	<ProjectReference Include="..\AlexNest.Core\AlexNest.Core.csproj" />
+	<ProjectReference Include="..\AlexNest.IO.DXF\AlexNest.IO.DXF.csproj" />
   </ItemGroup>
-
 </Project>

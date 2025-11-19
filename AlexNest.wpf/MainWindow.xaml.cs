@@ -1,9 +1,10 @@
-﻿using Microsoft.Win32;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Windows;
+using Microsoft.Win32;
 using AlexNest.Core.Algorithms;
 using AlexNest.Core.Model;
-using AlexNest.IO.Dxf;
+using AlexNest.IO.DXF;
+using System;
 
 namespace AlexNest.wpf;
 
@@ -29,10 +30,8 @@ public partial class MainWindow : Window
         {
             try
             {
-                // You can tweak options: layer filters, etc.
-                _parts = DXFPartImporter.ImportParts(dlg.FileName, new DxfPartImportOptions
+                _parts = DxfPartImporter.ImportParts(dlg.FileName, new DxfPartImportOptions
                 {
-                    // PartLayers = new List<string> { "PARTS" }, // optional
                     EachClosedShapeIsPart = true
                 });
 
@@ -58,7 +57,7 @@ public partial class MainWindow : Window
             {
                 _plate = DxfPlateImporter.ImportPlate(dlg.FileName, new DxfPlateImportOptions
                 {
-                    PlateOuterLayer = "PLATE", // adjust to match your DXF
+                    PlateOuterLayer = "PLATE",
                     VoidLayer = "VOID"
                 });
 
