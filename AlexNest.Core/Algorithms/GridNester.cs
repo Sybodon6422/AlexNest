@@ -1,204 +1,176 @@
+ï»¿using System;
+using System.Collections.Generic;
+using System.Linq;
 using AlexNest.Core.Geometry;
 using AlexNest.Core.Model;
 
-namespace AlexNest.Core.Algorithms;
-public class GridNesterSettings
+namespace AlexNest.Core.Algorithms
 {
-    /// <summary>
-    /// Grid step size in same units as geometry (e.g. mm or inches).
-    /// </summary>
-    public double GridStep { get; set; } = 5.0;
-
-    /// <summary>
-    /// Extra distance between parts (clearance), not including kerf.
-    /// </summary>
-    public double Clearance { get; set; } = 1.0;
-
-    /// <summary>
-    /// Kerf width (cut width).
-    /// </summary>
-    public double Kerf { get; set; } = 1.5;
-
-    /// <summary>
-    /// Allowed rotations in degrees. If null, auto-generate from RotationStepDeg of parts.
-    /// </summary>
-    public List<double>? AllowedRotationsDeg { get; set; }
-}
-
-public class NestingResult
-{
-    public List<PartPlacement> Placements { get; } = new();
-    public List<NestPart> UnplacedParts { get; } = new();
-}
-
-public class GridNester
-{
-    public NestingResult Nest(IEnumerable<NestPart> parts, NestPlate plate, GridNesterSettings settings)
+    public class GridNester : INester
     {
-        // Ensure parts have bounds & area
-        foreach (var part in parts)
-            part.RecalculateProperties();
-
-        // explode quantities into a flat list of instances
-        var instances = new List<NestPart>();
-        foreach (var p in parts)
+        public NestingResult Nest(List<NestPart> parts, NestPlate plate, GridNesterSettings settings)
         {
-            for (int i = 0; i < p.Quantity; i++)
-                instances.Add(p);
-        }
+            var placements = new List<PartPlacement>();
+            var unplaced = new List<NestPart>();
 
-        // Sort biggest area first to reduce trapping
-        instances = instances
-            .OrderByDescending(p => p.Area)
-            .ToList();
-
-        var placements = new List<PartPlacement>();
-        var unplaced = new List<NestPart>();
-
-        foreach (var part in instances)
-        {
-            if (!TryPlacePart(part, plate, settings, placements, out var placement))
-            {
-                unplaced.Add(part);
-            }
-            else
-            {
-                placements.Add(placement);
-            }
-        }
-
-        var result = new NestingResult();
-        result.Placements.AddRange(placements);
-        result.UnplacedParts.AddRange(unplaced);
-        return result;
-    }
-
-    private bool TryPlacePart(
-        NestPart part,
-        NestPlate plate,
-        GridNesterSettings settings,
-        List<PartPlacement> existing,
-        out PartPlacement placement)
-    {
-        placement = null!;
-
-        var allowedRotations = settings.AllowedRotationsDeg;
-        if (allowedRotations == null || allowedRotations.Count == 0)
-        {
-            allowedRotations = new List<double>();
-            double step = part.RotationStepDeg;
-            double n = Math.Max(1, Math.Round(360.0 / step));
-            for (int i = 0; i < (int)n; i++)
-                allowedRotations.Add(i * step);
-        }
-
-        double spacing = settings.Clearance + settings.Kerf;
-
-        // We’ll work in local coordinates where part.Bounds.BottomLeft is (0,0)
-        var localOffset = new Vec2(-part.Bounds.MinX, -part.Bounds.MinY);
-
-        foreach (var rotDeg in allowedRotations)
-        {
-            double rotRad = rotDeg * Math.PI / 180.0;
-
-            // Precompute rotated contours so we can reuse them at different translations
-            var rotatedContours = part.Contours
-                .Select(c => c.Transform(localOffset, rotRad))
+            // Place larger parts first (by bounding-box area)
+            var orderedParts = parts
+                .OrderByDescending(p => p.Bounds.Width * p.Bounds.Height)
                 .ToList();
 
-            var rotatedAllPoints = rotatedContours.SelectMany(c => c.Vertices).ToList();
-            var rotatedBounds = Rect2D.FromPoints(rotatedAllPoints);
+            // Grid dimensions in cells
+            int gridWidth = (int)(plate.Width / settings.GridStep) + 2;
+            int gridHeight = (int)(plate.Height / settings.GridStep) + 2;
 
-            double step = settings.GridStep;
+            // Occupancy map
+            bool[,] occupied = new bool[gridWidth, gridHeight];
 
-            for (double y = 0; y + rotatedBounds.Height <= plate.Height + 1e-6; y += step)
+            foreach (var part in orderedParts)
             {
-                for (double x = 0; x + rotatedBounds.Width <= plate.Width + 1e-6; x += step)
+                int copies = Math.Max(1, part.Quantity);
+
+                for (int copy = 0; copy < copies; copy++)
                 {
-                    var translation = new Vec2(x - rotatedBounds.MinX, y - rotatedBounds.MinY);
+                    bool placedThisCopy = false;
 
-                    // simple AABB for the placed part
-                    var placedBounds = rotatedBounds.Translate(translation);
-
-                    // Quick check: must be inside plate rectangle with spacing from edges
-                    if (placedBounds.MinX < spacing ||
-                        placedBounds.MinY < spacing ||
-                        placedBounds.MaxX > plate.Width - spacing ||
-                        placedBounds.MaxY > plate.Height - spacing)
+                    foreach (var rotDeg in GetAllowedRotations(part))
                     {
-                        continue;
-                    }
+                        double rotRad = rotDeg * Math.PI / 180.0;
 
-                    // Collision with existing placements (AABB first, then polygon)
-                    bool collision = false;
-                    foreach (var e in existing)
-                    {
-                        // fast AABB check with spacing
-                        var expanded = new Rect2D(
-                            e.Bounds.MinX - spacing,
-                            e.Bounds.MinY - spacing,
-                            e.Bounds.MaxX + spacing,
-                            e.Bounds.MaxY + spacing);
+                        // Rough rotated bounding box
+                        double w = part.Bounds.Width;
+                        double h = part.Bounds.Height;
 
-                        if (!placedBounds.Intersects(expanded))
-                            continue;
+                        double rotatedW =
+                            Math.Abs(w * Math.Cos(rotRad)) +
+                            Math.Abs(h * Math.Sin(rotRad));
+                        double rotatedH =
+                            Math.Abs(w * Math.Sin(rotRad)) +
+                            Math.Abs(h * Math.Cos(rotRad));
 
-                        // slower polygon check
-                        if (PolygonsOverlap(rotatedContours, translation, e.Part, e.Position, e.RotationDeg))
+                        // Cell count needed
+                        int needCellsX = Math.Max(1, (int)Math.Ceiling(rotatedW / settings.GridStep));
+                        int needCellsY = Math.Max(1, (int)Math.Ceiling(rotatedH / settings.GridStep));
+
+                        for (int gy = 0; gy <= gridHeight - needCellsY && !placedThisCopy; gy++)
                         {
-                            collision = true;
-                            break;
+                            for (int gx = 0; gx <= gridWidth - needCellsX && !placedThisCopy; gx++)
+                            {
+                                var pos = new Vec2(
+                                    gx * settings.GridStep + rotatedW / 2.0 + settings.Clearance,
+                                    gy * settings.GridStep + rotatedH / 2.0 + settings.Clearance);
+
+                                if (TryPlacePart(
+                                        part,
+                                        plate,
+                                        pos,
+                                        rotRad,
+                                        settings,
+                                        occupied,
+                                        rotatedW,
+                                        rotatedH,
+                                        gx,
+                                        gy,
+                                        needCellsX,
+                                        needCellsY,
+                                        out var placement))
+                                {
+                                    // If your PartPlacement has Mirrored { get; set; }:
+                                    if (settings.AllowMirror)
+                                    {
+                                        // simple heuristic: alternate mirrored copies
+                                        placement.Mirrored = (copy % 2 == 1);
+                                    }
+
+                                    placements.Add(placement);
+                                    MarkOccupied(occupied, gx, gy, needCellsX, needCellsY);
+                                    placedThisCopy = true;
+                                }
+                            }
                         }
                     }
 
-                    if (!collision)
-                    {
-                        placement = new PartPlacement(part, translation, rotDeg, placedBounds);
-                        return true;
-                    }
+                    if (!placedThisCopy)
+                        unplaced.Add(part);
                 }
             }
+
+            var result = new NestingResult();
+            result.Placements.AddRange(placements);
+            result.UnplacedParts.AddRange(unplaced);
+            return result;
         }
 
-        return false;
-    }
-
-    private bool PolygonsOverlap(
-        List<NestContour> contoursA, Vec2 translationA,
-        NestPart partB, Vec2 translationB, double rotationBDeg)
-    {
-        double rotBRad = rotationBDeg * Math.PI / 180.0;
-        var offsetB = new Vec2(-partB.Bounds.MinX, -partB.Bounds.MinY);
-
-        // Build transformed polygons for B
-        var contoursB = partB.Contours
-            .Select(c => c.Transform(offsetB, rotBRad))
-            .ToList();
-
-        foreach (var cB in contoursB)
+        // Allowed rotations based on part.RotationStepDeg
+        private IEnumerable<int> GetAllowedRotations(NestPart part)
         {
-            for (int i = 0; i < cB.Vertices.Count; i++)
-                cB.Vertices[i] = cB.Vertices[i] + translationB;
-        }
-
-        // Build transformed polygons for A (we already have rotated, we just add translation)
-        var transformedA = contoursA.Select(c =>
-        {
-            var nc = new NestContour { IsOuter = c.IsOuter };
-            foreach (var v in c.Vertices)
-                nc.Vertices.Add(v + translationA);
-            return nc;
-        }).ToList();
-
-        foreach (var ca in transformedA)
-        {
-            foreach (var cb in contoursB)
+            if (part.RotationStepDeg <= 0)
             {
-                if (PolygonUtils.PolygonsIntersect(ca.Vertices, cb.Vertices))
-                    return true;
+                yield return 0;
+                yield break;
             }
+
+            for (int r = 0; r < 360; r += (int)part.RotationStepDeg)
+                yield return r;
         }
 
-        return false;
+        private bool TryPlacePart(
+            NestPart part,
+            NestPlate plate,
+            Vec2 pos,
+            double rotRad,
+            GridNesterSettings settings,
+            bool[,] occupied,
+            double rotatedW,
+            double rotatedH,
+            int gx,
+            int gy,
+            int needCellsX,
+            int needCellsY,
+            out PartPlacement placement)
+        {
+            placement = null!;
+
+            // Plate boundary check (with clearance)
+            double halfW = rotatedW / 2.0 + settings.Clearance;
+            double halfH = rotatedH / 2.0 + settings.Clearance;
+
+            if (pos.X - halfW < 0 ||
+                pos.Y - halfH < 0 ||
+                pos.X + halfW > plate.Width ||
+                pos.Y + halfH > plate.Height)
+            {
+                return false;
+            }
+
+            // Check grid occupancy
+            for (int yy = gy; yy < gy + needCellsY; yy++)
+            {
+                for (int xx = gx; xx < gx + needCellsX; xx++)
+                {
+                    if (occupied[xx, yy])
+                        return false;
+                }
+            }
+
+            // Create placement using YOUR constructor
+            // Rect2D = bounding box in plate coordinates
+            var bounds = new Rect2D(
+                pos.X - rotatedW / 2.0,
+                pos.Y - rotatedH / 2.0,
+                rotatedW,
+                rotatedH);
+
+            placement = new PartPlacement(part, pos, rotRad, bounds);
+
+            return true;
+        }
+
+        private void MarkOccupied(bool[,] occupied, int gx, int gy, int w, int h)
+        {
+            for (int yy = gy; yy < gy + h; yy++)
+                for (int xx = gx; xx < gx + w; xx++)
+                    occupied[xx, yy] = true;
+        }
     }
 }

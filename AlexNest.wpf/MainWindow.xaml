@@ -6,6 +6,7 @@
         Height="800"
         Width="1200">
     <DockPanel>
+        <!-- Top toolbar -->
         <StackPanel DockPanel.Dock="Top"
                     Orientation="Horizontal"
                     Margin="5">
@@ -31,10 +32,136 @@
             </Button>
         </StackPanel>
 
-        <Border BorderBrush="Gray"
-                BorderThickness="1"
-                Margin="5">
-            <local:NestViewer x:Name="Viewer" />
-        </Border>
+        <!-- Main content: left = settings, right = viewer -->
+        <Grid Margin="5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- LEFT: Nest settings -->
+            <Border Grid.Column="0"
+                    BorderBrush="Gray"
+                    BorderThickness="1"
+                    Padding="5"
+                    Margin="0,0,5,0">
+                <StackPanel>
+                    <TextBlock Text="Nest Settings"
+                               FontWeight="Bold"
+                               Margin="0,0,0,5" />
+
+                    <!-- Plate info -->
+                    <TextBlock Text="{Binding PlateInfo}"
+                               Margin="0,0,0,10"
+                               TextWrapping="Wrap" />
+
+                    <!-- Grid settings -->
+                    <GroupBox Header="Grid / Clearance"
+                              Margin="0,0,0,10">
+                        <StackPanel Margin="5">
+                            <StackPanel Orientation="Horizontal"
+                                        Margin="0,0,0,5">
+                                <TextBlock Text="Grid Step:"
+                                           Width="80"
+                                           VerticalAlignment="Center" />
+                                <TextBox Text="{Binding GridStep}"
+                                         Width="80"
+                                         Margin="5,0,0,0" />
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal"
+                                        Margin="0,0,0,5">
+                                <TextBlock Text="Clearance:"
+                                           Width="80"
+                                           VerticalAlignment="Center" />
+                                <TextBox Text="{Binding Clearance}"
+                                         Width="80"
+                                         Margin="5,0,0,0" />
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Kerf:"
+                                           Width="80"
+                                           VerticalAlignment="Center" />
+                                <TextBox Text="{Binding Kerf}"
+                                         Width="80"
+                                         Margin="5,0,0,0" />
+                            </StackPanel>
+                        </StackPanel>
+                    </GroupBox>
+                    <GroupBox Header="Algorithm"
+          Margin="0,0,0,10">
+                        <StackPanel Margin="5">
+                            <StackPanel Orientation="Horizontal"
+                    Margin="0,0,0,5">
+                                <TextBlock Text="Mode:"
+                       Width="80"
+                       VerticalAlignment="Center" />
+                                <ComboBox Width="180"
+                      SelectedValue="{Binding SelectedAlgorithm}"
+                      SelectedValuePath="Content">
+                                    <ComboBoxItem Content="Grid" />
+                                    <ComboBoxItem Content="Strip" />
+                                </ComboBox>
+                            </StackPanel>
+
+                            <CheckBox Content="Allow Mirroring"
+                  IsChecked="{Binding AllowMirror}" />
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Parts list / quantities -->
+                    <GroupBox Header="Parts"
+                              Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <DataGrid Grid.Row="0"
+                                      ItemsSource="{Binding Parts}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      HeadersVisibility="Column"
+                                      Margin="0,0,0,5"
+                                      IsReadOnly="False">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Name"
+                                                        Binding="{Binding Name}"
+                                                        IsReadOnly="True"
+                                                        Width="*" />
+                                    <DataGridTextColumn Header="W"
+                                                        Binding="{Binding Width, StringFormat=0.##}"
+                                                        IsReadOnly="True"
+                                                        Width="60" />
+                                    <DataGridTextColumn Header="H"
+                                                        Binding="{Binding Height, StringFormat=0.##}"
+                                                        IsReadOnly="True"
+                                                        Width="60" />
+                                    <DataGridTextColumn Header="Qty"
+                                                        Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}"
+                                                        Width="60" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Grid.Row="1"
+                                       Text="Edit Qty to set how many of each part to nest."
+                                       FontSize="11"
+                                       Foreground="Gray"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                    </GroupBox>
+                </StackPanel>
+            </Border>
+
+            <!-- RIGHT: Viewer -->
+            <Border Grid.Column="1"
+                    BorderBrush="Gray"
+                    BorderThickness="1">
+                <local:NestViewer x:Name="Viewer" />
+            </Border>
+        </Grid>
     </DockPanel>
 </Window>
