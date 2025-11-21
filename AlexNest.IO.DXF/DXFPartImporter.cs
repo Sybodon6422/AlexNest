@@ -136,19 +136,16 @@ public static class DxfPartImporter
 
         // ---------- CASE B: no closed polylines → try to build polygon from LINES ----------
         var lineEntities = file.Entities.OfType<DxfLine>().Where(FilterLayer).ToList();
+        var arcEntities = file.Entities.OfType<DxfArc>().Where(FilterLayer).ToList();
 
-        if (lineEntities.Count >= 3)
+        if (lineEntities.Count + arcEntities.Count >= 3)
         {
-            var reconstructed = TryBuildPolygonFromLines(lineEntities);
+            var (outerLoop, holeLoops) = BuildLoopsFromLinesAndArcs(lineEntities, arcEntities, arcSegments: 32);
 
-            if (reconstructed != null && reconstructed.Count >= 3)
+            if (outerLoop != null && outerLoop.Count >= 3)
             {
                 var outerContour = new NestContour { IsOuter = true };
-                outerContour.Vertices.AddRange(reconstructed);
-
-                // Treat circles as holes in this part when using line-based contour
-                foreach (var hole in circleContours)
-                    hole.IsOuter = false;
+                outerContour.Vertices.AddRange(outerLoop);
 
                 var part = new NestPart
                 {
@@ -158,8 +155,21 @@ public static class DxfPartImporter
                 };
 
                 part.Contours.Add(outerContour);
-                foreach (var hole in circleContours)
+
+                // holes from arc/line loops
+                foreach (var hl in holeLoops)
+                {
+                    var hole = new NestContour { IsOuter = false };
+                    hole.Vertices.AddRange(hl);
                     part.Contours.Add(hole);
+                }
+
+                // circles are also holes
+                foreach (var hole in circleContours)
+                {
+                    hole.IsOuter = false;
+                    part.Contours.Add(hole);
+                }
 
                 part.RecalculateProperties();
                 return new List<NestPart> { part };
@@ -274,6 +284,201 @@ public static class DxfPartImporter
         return null;
     }
 
+    private static (List<Vec2>? outer, List<List<Vec2>> holes)
+     BuildLoopsFromLinesAndArcs(
+         List<DxfLine> lines,
+         List<DxfArc> arcs,
+         int arcSegments = 24)
+    {
+        const double EPS = 1e-5;
+
+        static bool Near(Vec2 a, Vec2 b) =>
+            Math.Abs(a.X - b.X) < EPS && Math.Abs(a.Y - b.Y) < EPS;
+
+        // Build chains from lines
+        var chains = new List<List<Vec2>>();
+        foreach (var ln in lines)
+        {
+            chains.Add(new List<Vec2>
+        {
+            new Vec2(ln.P1.X, ln.P1.Y),
+            new Vec2(ln.P2.X, ln.P2.Y)
+        });
+        }
+
+        // Build chains from arcs (sampled)
+        foreach (var a in arcs)
+            chains.Add(SampleArcCCW(a, arcSegments));
+
+        var loops = new List<List<Vec2>>();
+
+        int safetyLoops = 0;
+        int maxLoops = 200;   // hard cap
+        int maxJoins = 5000;  // hard cap inside one loop
+
+        while (chains.Count > 0 && safetyLoops++ < maxLoops)
+        {
+            // start a new loop with the first remaining chain
+            var loop = new List<Vec2>(chains[0]);
+            chains.RemoveAt(0);
+
+            int safetyJoin = 0;
+            while (chains.Count > 0 && safetyJoin++ < maxJoins)
+            {
+                bool joined = false;
+                var head = loop[0];
+                var tail = loop[^1];
+
+                for (int i = 0; i < chains.Count; i++)
+                {
+                    var c = chains[i];
+                    var cHead = c[0];
+                    var cTail = c[^1];
+
+                    if (Near(tail, cHead))
+                    {
+                        loop.AddRange(c.Skip(1));
+                        chains.RemoveAt(i);
+                        joined = true;
+                        break;
+                    }
+                    if (Near(tail, cTail))
+                    {
+                        c.Reverse();
+                        loop.AddRange(c.Skip(1));
+                        chains.RemoveAt(i);
+                        joined = true;
+                        break;
+                    }
+                    if (Near(head, cTail))
+                    {
+                        loop.InsertRange(0, c.Take(c.Count - 1));
+                        chains.RemoveAt(i);
+                        joined = true;
+                        break;
+                    }
+                    if (Near(head, cHead))
+                    {
+                        c.Reverse();
+                        loop.InsertRange(0, c.Take(c.Count - 1));
+                        chains.RemoveAt(i);
+                        joined = true;
+                        break;
+                    }
+                }
+
+                if (!joined)
+                    break;
+
+                // closed?
+                if (loop.Count >= 4 && Near(loop[0], loop[^1]))
+                    break;
+            }
+
+            if (loop.Count >= 4 && Near(loop[0], loop[^1]))
+            {
+                loop = CleanupPath(loop);
+                loops.Add(loop);
+            }
+        }
+
+        if (loops.Count == 0)
+            return (null, new List<List<Vec2>>());
+
+        // Pick largest area magnitude loop as outer
+        var ordered = loops
+            .Select(l => (loop: l, area: Math.Abs(SignedArea(l))))
+            .OrderByDescending(x => x.area)
+            .ToList();
+
+        var outer = ordered[0].loop;
+        var holes = ordered.Skip(1).Select(x => x.loop).ToList();
+
+        return (outer, holes);
+    }
+
+
+    private static List<Vec2> SampleArcCCW(DxfArc arc, int baseSegments)
+    {
+        baseSegments = Math.Max(6, baseSegments);
+
+        var c = arc.Center;
+        double r = arc.Radius;
+
+        double start = arc.StartAngle * Math.PI / 180.0;
+        double end = arc.EndAngle * Math.PI / 180.0;
+
+        // DXF arcs are CCW from start to end
+        double sweep = end - start;
+        while (sweep <= 0) sweep += Math.PI * 2;
+
+        // adaptive segments by arc length, capped
+        double arcLen = sweep * r;
+        int segments = Math.Max(baseSegments, (int)(arcLen / 0.05));
+        segments = Math.Min(segments, 256);
+
+        var pts = new List<Vec2>(segments + 1);
+        for (int i = 0; i <= segments; i++)
+        {
+            double t = i / (double)segments;
+            double ang = start + sweep * t;
+
+            pts.Add(new Vec2(
+                c.X + r * Math.Cos(ang),
+                c.Y + r * Math.Sin(ang)
+            ));
+        }
+
+        return pts;
+    }
+
+    private static double SignedArea(List<Vec2> pts)
+    {
+        double a = 0;
+        for (int i = 0; i < pts.Count - 1; i++)
+        {
+            var p = pts[i];
+            var q = pts[i + 1];
+            a += (p.X * q.Y - q.X * p.Y);
+        }
+        return 0.5 * a;
+    }
+
+    private static List<Vec2> CleanupPath(List<Vec2> pts, double eps = 1e-5)
+    {
+        if (pts.Count < 3) return pts;
+
+        // remove near duplicates
+        var dedup = new List<Vec2> { pts[0] };
+        for (int i = 1; i < pts.Count; i++)
+        {
+            var p = pts[i];
+            var last = dedup[^1];
+            if (Math.Abs(p.X - last.X) > eps || Math.Abs(p.Y - last.Y) > eps)
+                dedup.Add(p);
+        }
+
+        if (dedup.Count < 3) return dedup;
+
+        // remove collinear midpoints
+        var clean = new List<Vec2> { dedup[0] };
+        for (int i = 1; i < dedup.Count - 1; i++)
+        {
+            var a = clean[^1];
+            var b = dedup[i];
+            var c = dedup[i + 1];
+
+            var ab = b - a;
+            var bc = c - b;
+
+            double cross = ab.X * bc.Y - ab.Y * bc.X;
+            if (Math.Abs(cross) > eps)
+                clean.Add(b);
+        }
+        clean.Add(dedup[^1]);
+        return clean;
+    }
+
     private static (double minX, double minY, double maxX, double maxY)
         ComputeExtents(IEnumerable<DxfEntity> entities)
     {
@@ -328,4 +533,35 @@ public static class DxfPartImporter
 
         return (minX, minY, maxX, maxY);
     }
+
+    private static List<Vec2> SampleArc(DxfArc arc, int segments)
+    {
+        segments = Math.Max(6, segments);
+
+        var c = arc.Center;
+        double r = arc.Radius;
+
+        // IxMilia uses degrees
+        double start = arc.StartAngle * Math.PI / 180.0;
+        double end = arc.EndAngle * Math.PI / 180.0;
+
+        // Normalize sweep CCW
+        double sweep = end - start;
+        while (sweep <= 0) sweep += Math.PI * 2;
+
+        var pts = new List<Vec2>(segments + 1);
+        for (int i = 0; i <= segments; i++)
+        {
+            double t = i / (double)segments;
+            double ang = start + sweep * t;
+
+            pts.Add(new Vec2(
+                c.X + r * Math.Cos(ang),
+                c.Y + r * Math.Sin(ang)
+            ));
+        }
+
+        return pts;
+    }
+
 }
